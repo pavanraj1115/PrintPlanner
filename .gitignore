@@ -1,0 +1,32 @@
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Sensitive Credentials
+service_account.json
+gdrive_config.json
+.env
+*.pem
+
+# Ephemeral Build Files & Customer CAD Assets
+builds/*
+!builds/.gitkeep
+models/*
+!models/.gitkeep
+queued_builds/*
+!queued_builds/.gitkeep
+*.gcode
+*.3mf
+*.stl
+*.step
+*.stp
+*.obj
+
+# OS & IDE Metadata
+.DS_Store
+Thumbs.db
+ehthumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,8 @@
+trimesh>=5.1.0
+numpy>=2.0.0
+scipy>=1.17.0
+shapely>=2.2.0
+requests>=2.31.0
+networkx>=3.0.0
+lxml>=6.0.0
+customtkinter>=6.0.0

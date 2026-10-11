@@ -1,0 +1,7 @@
+{
+    "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    "client_secret": "YOUR_GOOGLE_CLIENT_SECRET",
+    "refresh_token": "YOUR_GOOGLE_REFRESH_TOKEN",
+    "root_folder_id": "YOUR_ROOT_FOLDER_ID",
+    "builds_folder_id": "YOUR_BUILDS_FOLDER_ID"
+}

@@ -964,6 +964,9 @@ def run_planner(
                 plate_est_weight += part_est_w
                 log_func(f"   • [Fill] Placed '{u['file_name']}' ({u['sales_order']}, Unit {u.get('qty_index', 1)}/{u.get('total_qty', 1)}) [{u.get('dimensions', '')}] ➔ {part_est_w:.1f}g")
 
+        # Symmetrically center layout on the plate with equal margins around all edges
+        plate.center_layout()
+
         if not plate.placed_items:
             # If spool budget prevented packing, or parts don't fit, mark spool completed so we can move on
             if preferred_spool and printer_mounted_spool.get(assigned_printer) == preferred_spool:

@@ -12,8 +12,9 @@ class BuildPlate:
         self.printer = printer
         self.material = material
         
-        # Printable boundary (leaving margin from bed edges)
-        margin = spacing
+        # Printable boundary: Part footprint polygon already includes spacing/2 buffer.
+        # Leaving margin=4.0mm guarantees physical mesh is at least 4.0mm from bed borders.
+        margin = max(spacing / 2.0, 4.0)
         self.min_x = margin
         self.min_y = margin
         self.max_x = bed_x - margin
@@ -51,7 +52,8 @@ class BuildPlate:
 
     def place_item(self, item_info, base_polygon):
         """
-        Attempts to place a part onto this plate using bottom-left heuristic with 0, 90, 180, 270 deg rotation permutations.
+        Places a part onto this plate using an anchor-based dense Bottom-Left heuristic
+        evaluating 0, 90, 180, and 270 deg rotations with visual orientation consistency.
         Returns True if placed, False if plate cannot fit this part.
         """
         minx, miny, maxx, maxy = base_polygon.bounds
@@ -61,10 +63,28 @@ class BuildPlate:
         # Centered at origin for clean rotation and translation
         zeroed_poly = translate(base_polygon, -orig_center_x, -orig_center_y)
         
-        step_grid = 8.0  # mm search step resolution
+        # Determine dominant orientation among already placed items to maintain orderly rows
+        prev_rotations = [it.get("rotation", 0.0) for it in self.placed_items]
+        dominant_rot = max(set(prev_rotations), key=prev_rotations.count) if prev_rotations else None
         
-        # Test 4 rotation permutations (0, 90, 180, 270 degrees)
-        for rot in [0.0, 90.0, 180.0, 270.0]:
+        best_candidate = None
+        best_score = float('inf')
+        best_pos = None
+        best_rot = None
+        
+        # 1. Candidate anchor points
+        anchors = [(self.min_x, self.min_y)]
+        for pb_poly in self.placed_polygons:
+            pb = pb_poly.bounds
+            anchors.append((pb[2], pb[1]))         # Right adjacent (next in row)
+            anchors.append((pb[0], pb[3]))         # Directly above (next row)
+            anchors.append((self.min_x, pb[3]))    # Start of new row at left margin
+            anchors.append((pb[2], pb[3]))         # Top-right corner
+            anchors.append((pb[2], self.min_y))    # Start of new column at bottom margin
+            
+        rotations = [0.0, 90.0, 180.0, 270.0]
+        
+        for rot in rotations:
             rot_poly = rotate(zeroed_poly, rot, origin=(0, 0)) if rot != 0.0 else zeroed_poly
             rminx, rminy, rmaxx, rmaxy = rot_poly.bounds
             half_w = (rmaxx - rminx) / 2.0
@@ -76,28 +96,108 @@ class BuildPlate:
             y_max_pos = self.max_y - half_h
             
             if x_min_pos > x_max_pos or y_min_pos > y_max_pos:
-                continue  # Rotated footprint exceeds bed boundaries in this orientation
+                continue
                 
-            x_steps = np.arange(x_min_pos, x_max_pos + 0.1, step_grid)
-            y_steps = np.arange(y_min_pos, y_max_pos + 0.1, step_grid)
-            
-            for cy in y_steps:
-                for cx in x_steps:
-                    candidate = translate(rot_poly, cx, cy)
-                    if self.can_fit(candidate):
-                        # Center placed mesh
-                        self.placed_polygons.append(candidate)
-                        placed_data = {
-                            **item_info,
-                            "pos_x": float(cx),
-                            "pos_y": float(cy),
-                            "rotation": float(rot),
-                            "placed_poly": candidate
-                        }
-                        self.placed_items.append(placed_data)
-                        return True
+            for ax, ay in anchors:
+                cx = ax + half_w
+                cy = ay + half_h
+                
+                if cx < x_min_pos or cx > x_max_pos or cy < y_min_pos or cy > y_max_pos:
+                    continue
+                    
+                cand = translate(rot_poly, cx, cy)
+                if self.can_fit(cand):
+                    # Bottom-Left scoring: lowest Y takes priority (fill rows bottom to top),
+                    # then lowest X (fill left to right).
+                    rot_penalty = 0.0
+                    if dominant_rot is not None and rot != dominant_rot:
+                        rot_penalty = 15.0  # Mild preference to keep identical parts facing same direction
+                    score = (cy + half_h) * 1000.0 + (cx + half_w) + rot_penalty
+                    if score < best_score:
+                        best_score = score
+                        best_candidate = cand
+                        best_pos = (float(cx), float(cy))
+                        best_rot = float(rot)
                         
+        # 2. Secondary fine-grid scan fallback (step = 3.0mm) to fill any irregular gaps
+        if best_candidate is None:
+            step_grid = 3.0
+            for rot in rotations:
+                rot_poly = rotate(zeroed_poly, rot, origin=(0, 0)) if rot != 0.0 else zeroed_poly
+                rminx, rminy, rmaxx, rmaxy = rot_poly.bounds
+                half_w = (rmaxx - rminx) / 2.0
+                half_h = (rmaxy - rminy) / 2.0
+                
+                x_min_pos = self.min_x + half_w
+                x_max_pos = self.max_x - half_w
+                y_min_pos = self.min_y + half_h
+                y_max_pos = self.max_y - half_h
+                
+                if x_min_pos > x_max_pos or y_min_pos > y_max_pos:
+                    continue
+                    
+                x_steps = np.arange(x_min_pos, x_max_pos + 0.1, step_grid)
+                y_steps = np.arange(y_min_pos, y_max_pos + 0.1, step_grid)
+                
+                for cy in y_steps:
+                    for cx in x_steps:
+                        cand = translate(rot_poly, cx, cy)
+                        if self.can_fit(cand):
+                            rot_penalty = 15.0 if (dominant_rot is not None and rot != dominant_rot) else 0.0
+                            score = (cy + half_h) * 1000.0 + (cx + half_w) + rot_penalty
+                            if score < best_score:
+                                best_score = score
+                                best_candidate = cand
+                                best_pos = (float(cx), float(cy))
+                                best_rot = float(rot)
+                                break
+                                
+        if best_candidate is not None:
+            self.placed_polygons.append(best_candidate)
+            placed_data = {
+                **item_info,
+                "pos_x": best_pos[0],
+                "pos_y": best_pos[1],
+                "rotation": best_rot,
+                "placed_poly": best_candidate
+            }
+            self.placed_items.append(placed_data)
+            return True
+            
         return False
+
+    def center_layout(self):
+        """
+        Centers all placed items symmetrically on the build plate with equal margins around all edges.
+        """
+        if not self.placed_items:
+            return
+            
+        all_bounds = [it["placed_poly"].bounds for it in self.placed_items]
+        min_x = min(b[0] for b in all_bounds)
+        max_x = max(b[2] for b in all_bounds)
+        min_y = min(b[1] for b in all_bounds)
+        max_y = max(b[3] for b in all_bounds)
+        
+        offset_x = (self.bed_x - (max_x + min_x)) / 2.0
+        offset_y = (self.bed_y - (max_y + min_y)) / 2.0
+        
+        # Verify that shifting keeps all items within printable bounds
+        can_shift = True
+        for b in all_bounds:
+            if (b[0] + offset_x < self.min_x or b[2] + offset_x > self.max_x or
+                b[1] + offset_y < self.min_y or b[3] + offset_y > self.max_y):
+                can_shift = False
+                break
+                
+        if can_shift and (abs(offset_x) > 0.1 or abs(offset_y) > 0.1):
+            new_polygons = []
+            for it in self.placed_items:
+                it["pos_x"] += offset_x
+                it["pos_y"] += offset_y
+                it["placed_poly"] = translate(it["placed_poly"], offset_x, offset_y)
+                new_polygons.append(it["placed_poly"])
+            self.placed_polygons = new_polygons
 
 
 class BuildNester:
@@ -118,7 +218,7 @@ class BuildNester:
 
     def pack_parts(self, part_items):
         """
-        Packs a list of part items onto the plates.
+        Packs a list of part items onto the plates and centers them.
         Returns (packed_items, remaining_unpacked_items)
         """
         unpacked = []
@@ -143,4 +243,8 @@ class BuildNester:
             if not placed:
                 unpacked.append(item)
                 
+        # Symmetrically center layout on each plate
+        for plate in self.plates:
+            plate.center_layout()
+            
         return self.plates, unpacked

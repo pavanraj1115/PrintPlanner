@@ -85,9 +85,46 @@ def estimate_print_time_hours(grams):
     return max(round(float(grams) / 25.0, 2), 0.2)
 
 
+def get_production_process_profile(orca_dir):
+    """
+    Ensures a production process profile exists with automated organic tree supports enabled.
+    This guarantees OrcaSlicer CLI in headless mode generates the exact same tree supports
+    seen when slicing interactively in OrcaSlicer GUI.
+    """
+    profiles_dir = BUILDS_DIR / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    custom_proc = profiles_dir / "0.20mm_Standard_Tree_Supports_ECC.json"
+    
+    import json
+    config_data = {
+        "type": "process",
+        "name": "0.20mm Standard Tree Supports @Elegoo CC 0.4 nozzle",
+        "inherits": "fdm_process_ecc_04020",
+        "from": "system",
+        "setting_id": "PECC04020_TREE_AUTO",
+        "instantiation": "true",
+        "enable_support": "1",
+        "support_type": "tree(auto)",
+        "support_style": "tree_organic",
+        "support_on_build_plate_only": "0",
+        "support_threshold_angle": "30",
+        "tree_support_branch_angle": "40",
+        "tree_support_branch_diameter": "5",
+        "bottom_shell_layers": "3",
+        "bottom_shell_thickness": "0.6",
+        "sparse_infill_pattern": "zig-zag",
+        "compatible_printers": ["Elegoo Centauri Carbon 0.4 nozzle"]
+    }
+    with open(custom_proc, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, indent=2)
+        
+    return custom_proc
+
+
 def find_orcaslicer_profiles(material_general="PLA"):
     """
     Finds matching Elegoo Centauri Carbon profiles (machine, process, filament).
+    Automatically equips production process with organic tree supports.
     """
     if not ORCA_SLICER_PATH or not os.path.exists(ORCA_SLICER_PATH):
         return None
@@ -98,7 +135,7 @@ def find_orcaslicer_profiles(material_general="PLA"):
         return None
         
     mach = res_profiles / "machine" / "ECC" / "Elegoo Centauri Carbon 0.4 nozzle.json"
-    proc = res_profiles / "process" / "ECC" / "0.20mm Standard @Elegoo CC 0.4 nozzle.json"
+    proc = get_production_process_profile(orca_dir)
     
     mat_upper = (material_general or "PLA").upper()
     fila_dir = res_profiles / "filament" / "ECC"
@@ -191,7 +228,7 @@ def slice_plate_with_orcaslicer(project_3mf_path, build_id, material_general="PL
             import shutil
             shutil.move(str(found_gcodes[0]), str(output_gcode))
             size_mb = round(output_gcode.stat().st_size / 1024 / 1024, 2)
-            print(f"[Slicer Bridge] ✅ G-code generated successfully: {output_gcode.name} ({size_mb} MB)")
+            print(f"[Slicer Bridge] [OK] G-code generated successfully: {output_gcode.name} ({size_mb} MB)")
             
         import shutil
         shutil.rmtree(temp_dir, ignore_errors=True)

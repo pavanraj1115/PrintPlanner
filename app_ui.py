@@ -591,7 +591,7 @@ class PrintPlannerApp(ctk.CTk):
             self.log(f"[{datetime.now().strftime('%H:%M:%S')}] Successfully fetched {len(orders)} open Sales Order(s).")
             
             # Check stock overview for PLA
-            stock_g, spool, _ = get_available_spools_and_stock("JMG_PLA_B")
+            stock_g, spool, _, _ = get_available_spools_and_stock("JMG_PLA_B")
             self.after(0, lambda: self.stat_material.configure(text=f"PLA Stores Stock: {stock_g/1000:.1f} kg"))
         except Exception as e:
             self.log(f"❌ Error fetching from ERPNext: {e}")

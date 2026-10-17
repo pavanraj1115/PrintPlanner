@@ -132,7 +132,7 @@ def get_pending_sales_orders(ignore_unstarted_draft_builds=False):
                     "weight": float(file_row.get("weight") or 0.0),
                     "support_weight": float(file_row.get("support_weight") or 0.0),
                     "material_general": file_row.get("material_general") or "PLA",
-                    "material_item": file_row.get("material_item") or "JMG-PLA-BL",
+                    "material_item": file_row.get("material_item") or "",
                     "custom_finished_good": file_row.get("custom_finished_good"),
                     "order_type": so_detail.get("order_type") or "",
                     "quantity": qty,
@@ -161,22 +161,36 @@ def get_pending_sales_orders(ignore_unstarted_draft_builds=False):
 
 def get_available_spools_and_stock(material_item, required_weight=0.0, simulated_locks=None, preferred_spool=None, exclude_spools=None):
     """
-    Checks stock in Stores for the specified material item.
+    Checks stock in Stores for the specified material item / base material.
     - Reads stock balance directly in grams (ERPNext actual_qty is already in grams).
     - Checks Filament Spool doctype, using 'balance_after_locking' as the checkpoint to avoid over-allocating spools.
     - Supports simulated_locks dictionary for dry-run in-memory reservations.
     - Supports preferred_spool for strict printer stickiness (never stolen or abandoned).
     - Supports exclude_spools to prevent choosing spools currently mounted on other printers.
-    Returns (total_stock_grams, suggested_spool_code, spool_usable_balance).
+    Returns (total_stock_grams, suggested_spool_code, spool_usable_balance, spool_material_item).
     """
     try:
+        mat_str = str(material_item or "").upper()
+        if "PETG" in mat_str: base_mat = "PETG"
+        elif "ABS" in mat_str or "ASA" in mat_str: base_mat = "ABS"
+        elif "RESIN" in mat_str or "SLA" in mat_str: base_mat = "RESIN"
+        elif "TPU" in mat_str: base_mat = "TPU"
+        else: base_mat = "PLA"
+
         # 1. Check Bin for total stock balance in Stores (ALREADY IN GRAMS)
-        fields = json.dumps(["warehouse", "actual_qty"])
-        filters = json.dumps([["item_code", "=", material_item]])
-        res = call_erpnext("/api/resource/Bin", params={"fields": fields, "filters": filters})
-        bins = res.get("data", [])
-        
-        total_stock_grams = sum(float(b.get("actual_qty", 0.0)) for b in bins)
+        total_stock_grams = 0.0
+        if material_item and material_item not in ["PLA", "PETG", "ABS", "TPU", "RESIN"]:
+            fields = json.dumps(["warehouse", "actual_qty"])
+            filters = json.dumps([["item_code", "=", material_item]])
+            res = call_erpnext("/api/resource/Bin", params={"fields": fields, "filters": filters})
+            bins = res.get("data", [])
+            total_stock_grams = sum(float(b.get("actual_qty", 0.0)) for b in bins)
+
+        if total_stock_grams == 0.0:
+            fields = json.dumps(["item_code", "actual_qty"])
+            all_bins = call_erpnext("/api/resource/Bin", params={"fields": fields, "limit_page_length": 50}).get("data", [])
+            total_stock_grams = sum(float(b.get("actual_qty", 0.0)) for b in all_bins if base_mat in (b.get("item_code") or "").upper())
+
         if simulated_locks:
             total_stock_grams = max(total_stock_grams - sum(simulated_locks.values()), 0.0)
         
@@ -186,7 +200,6 @@ def get_available_spools_and_stock(material_item, required_weight=0.0, simulated
             "locked_filament_weight", "balance_after_locking"
         ])
         spool_filters = json.dumps([
-            ["material_item", "=", material_item],
             ["status", "!=", "Depleted"]
         ])
         spool_res = call_erpnext("/api/resource/Filament Spool", params={
@@ -194,11 +207,20 @@ def get_available_spools_and_stock(material_item, required_weight=0.0, simulated
             "filters": spool_filters,
             "limit_page_length": 100
         })
-        spools = spool_res.get("data", [])
+        all_spools = spool_res.get("data", [])
+        
+        # Filter to spools belonging to this base material
+        spools = [s for s in all_spools if base_mat in (s.get("material_item") or s.get("name") or "").upper()]
+
+        # If exact item_code was requested, prefer exact matches if available
+        exact_match = [s for s in spools if s.get("material_item") == material_item]
+        if exact_match:
+            spools = exact_match
         
         suggested_spool = None
         spool_available_weight = 0.0
-        
+        spool_mat_item = material_item if (material_item and material_item not in ["PLA", "PETG", "ABS", "TPU", "RESIN"]) else f"JMG_{base_mat}_B"
+
         if spools:
             # Compute effective usable balance after locking for each spool
             for s in spools:
@@ -216,7 +238,8 @@ def get_available_spools_and_stock(material_item, required_weight=0.0, simulated
                     chosen = matching_pref[0]
                     suggested_spool = chosen["name"]
                     spool_available_weight = float(chosen.get("effective_balance") or 0.0)
-                    return total_stock_grams, suggested_spool, spool_available_weight
+                    spool_mat_item = chosen.get("material_item") or spool_mat_item
+                    return total_stock_grams, suggested_spool, spool_available_weight, spool_mat_item
 
             # Workstation Spool Isolation: Filter out spools mounted on other workstations
             if exclude_spools:
@@ -236,26 +259,26 @@ def get_available_spools_and_stock(material_item, required_weight=0.0, simulated
                 spools.sort(key=lambda s: s["effective_balance"], reverse=True)
                 chosen = spools[0]
             else:
-                return total_stock_grams, None, 0.0
+                return total_stock_grams, None, 0.0, spool_mat_item
                 
             suggested_spool = chosen["name"]
             spool_available_weight = float(chosen.get("effective_balance") or 0.0)
+            spool_mat_item = chosen.get("material_item") or spool_mat_item
         else:
             # Fallback check
-            any_spool_res = call_erpnext("/api/resource/Filament Spool", params={"fields": '["name"]', "limit_page_length": 1})
-            any_spools = any_spool_res.get("data", [])
-            if any_spools:
-                suggested_spool = any_spools[0]["name"]
+            if all_spools:
+                suggested_spool = all_spools[0]["name"]
+                spool_mat_item = all_spools[0].get("material_item") or material_item or f"JMG_{base_mat}_B"
                 spool_available_weight = total_stock_grams
             else:
                 suggested_spool = ""
                 spool_available_weight = total_stock_grams
                 
-        return total_stock_grams, suggested_spool, spool_available_weight
+        return total_stock_grams, suggested_spool, spool_available_weight, spool_mat_item
         
     except Exception as e:
         print(f"[ERPNext Sync] Warning checking spool stock: {e}")
-        return 0.0, None, 0.0
+        return 0.0, None, 0.0, material_item
 
 
 def lock_filament_weight_on_spool(spool_name, weight_grams):
@@ -480,6 +503,16 @@ def cancel_unstarted_draft_builds(selected_printers=None):
                                         "value": "Not Printed"
                                     }
                                 )
+                                call_erpnext(
+                                    "/api/method/frappe.client.set_value",
+                                    method="POST",
+                                    payload={
+                                        "doctype": "sales order files",
+                                        "name": row_ref,
+                                        "fieldname": "material_item",
+                                        "value": ""
+                                    }
+                                )
                             except Exception:
                                 pass
                     call_erpnext(f"/api/resource/Print%20Build/{b_name}", method="DELETE")
@@ -595,6 +628,16 @@ def post_print_build_draft(plate_data, material_item, printer, suggested_spool, 
                         "value": "Build"
                     }
                 )
+                call_erpnext(
+                    "/api/method/frappe.client.set_value",
+                    method="POST",
+                    payload={
+                        "doctype": "sales order files",
+                        "name": row_name,
+                        "fieldname": "material_item",
+                        "value": material_item
+                    }
+                )
             except Exception as e:
                 print(f"[ERPNext Sync] Notice updating SO row {row_name}: {e}")
                 
@@ -630,6 +673,16 @@ def cancel_draft_builds(build_names):
                                 "name": row_ref,
                                 "fieldname": "status",
                                 "value": "Not Printed"
+                            }
+                        )
+                        call_erpnext(
+                            "/api/method/frappe.client.set_value",
+                            method="POST",
+                            payload={
+                                "doctype": "sales order files",
+                                "name": row_ref,
+                                "fieldname": "material_item",
+                                "value": ""
                             }
                         )
                     except Exception:

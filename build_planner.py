@@ -677,7 +677,7 @@ def run_planner(
                     "row_name": f.get("row_name", ""),
                     "material_general": base_mat,
                     "material_detail": mat_raw,
-                    "material_item": f.get("material_item") or f"JMG-{base_mat}-BL",
+                    "material_item": f.get("material_item") or "",
                     "custom_finished_good": f.get("custom_finished_good"),
                     "order_type": f.get("order_type") or "",
                     "dimensions": erp_dims,
@@ -828,8 +828,8 @@ def run_planner(
                 printer_mounted_spool,
                 printer_build_counts
             )
-            rep_mat_item = cand_units[0].get("material_item") or f"JMG-{current_mat}-BL"
-            _, suggested_spool, spool_usable_bal = get_available_spools_and_stock(
+            rep_mat_item = cand_units[0].get("material_item") or current_mat
+            _, suggested_spool, spool_usable_bal, _ = get_available_spools_and_stock(
                 rep_mat_item,
                 required_weight=30.0,
                 simulated_locks=simulated_spool_locks,
@@ -1057,7 +1057,7 @@ def run_planner(
             log_func(f"   • Ideal Start Time: {plate.ideal_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         # ERPNext Material Item
-        mat_item = plate.placed_items[0].get("material_item") or f"JMG-{p_mat}-BL"
+        mat_item = plate.placed_items[0].get("material_item") or (f"JMG_{p_mat}_B" if p_mat == "PLA" else f"JMG_{p_mat}_BL")
 
         protected_spools = get_mutex_protected_spools(
             p_printer,
@@ -1068,13 +1068,15 @@ def run_planner(
             printer_build_counts
         )
         # Check stock and select best spool in ERPNext using balance_after_locking, respecting preferred_spool
-        available_grams, suggested_spool, spool_weight = get_available_spools_and_stock(
-            mat_item,
+        available_grams, suggested_spool, spool_weight, spool_mat_item = get_available_spools_and_stock(
+            p_mat,
             required_weight=final_weight,
             simulated_locks=actual_spool_locks,
             preferred_spool=plate.preferred_spool,
             exclude_spools=protected_spools
         )
+        if spool_mat_item:
+            mat_item = spool_mat_item
         log_func(f"   • Stores Stock: {available_grams:.1f} g (Selected Spool: '{suggested_spool}', Usable Balance: {spool_weight:.1f} g)")
 
         if available_grams >= final_weight and suggested_spool:
